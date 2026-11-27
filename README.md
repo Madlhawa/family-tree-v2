@@ -1,6 +1,6 @@
 # Family Tree
 
-A free, local-first family tree app for ordinary families. No account needed. Everything is saved in your browser (IndexedDB) on this device.
+A free, local-first family tree app for ordinary families. No account needed. Everything is saved in your browser (IndexedDB) on this device, encrypted with your password (AES-256-GCM, PBKDF2 with 600,000 rounds). See [SECURITY.md](SECURITY.md).
 
 ## Features
 
@@ -36,6 +36,7 @@ A free, local-first family tree app for ordinary families. No account needed. Ev
   - Optional redaction of living people.
 - **History:** undo/redo, plus a readable list of changes.
 - **Privacy:** a Public view that hides living people's details.
+- **Security:** a password lock screen with a recovery code and auto-lock, encrypted storage and backups, and a strict Content Security Policy.
 - **Display:** light and dark mode, accessible dialogs and menus, and a phone-friendly layout.
 
 ## Development

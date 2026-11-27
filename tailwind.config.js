@@ -22,7 +22,7 @@ export default {
         soft: '0 1px 2px rgb(0 0 0 / 0.06), 0 2px 8px rgb(0 0 0 / 0.06)',
         lift: '0 4px 12px rgb(0 0 0 / 0.08), 0 12px 32px rgb(0 0 0 / 0.10)',
       },
-      fontFamily: { sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'] },
+      fontFamily: { sans: ['Inter Variable', 'Inter','system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'] },
     },
   },
   plugins: [],

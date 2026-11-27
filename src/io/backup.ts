@@ -70,31 +70,132 @@ export function restoreBackup(text: string): TreeData {
   return tree;
 }
 
-/** Defensive normalisation of anything loaded from outside. */
+// ---------- Defensive cleaning of anything loaded from outside ----------
+
+const MAX_TEXT = 20_000;
+const MAX_MEDIA = 25_000_000;
+const SAFE_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml);base64,[a-z0-9+/=\s]+$/i;
+const SAFE_AUDIO = /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/i;
+const BAD_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const str = (v: unknown, max = MAX_TEXT): string | undefined => (typeof v === 'string' ? v.slice(0, max) : typeof v === 'number' ? String(v) : undefined);
+const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T => ((allowed as readonly unknown[]).includes(v) ? (v as T) : fallback);
+const safeId = (v: unknown): string | undefined => {
+  const s = str(v, 200);
+  return s && !BAD_KEYS.has(s) ? s : undefined;
+};
+const list = (v: unknown, max = 10_000): unknown[] => (Array.isArray(v) ? v.slice(0, max) : []);
+
+/** A photo is only kept if it is an embedded image (no remote URLs, no scripts). */
+export function safeImage(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length <= MAX_MEDIA && SAFE_IMAGE.test(v) ? v : undefined;
+}
+function safeAudio(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length <= MAX_MEDIA && SAFE_AUDIO.test(v) ? v : undefined;
+}
+
+function cleanEvent(raw: unknown): LifeEvent | null {
+  if (!isObj(raw)) return null;
+  return {
+    id: safeId(raw.id) ?? uid('e'),
+    type: oneOf(raw.type, EVENT_TYPES, 'custom'),
+    label: str(raw.label, 500),
+    date: str(raw.date, 200),
+    place: str(raw.place, 500),
+    note: str(raw.note),
+    source: str(raw.source),
+    confidence: oneOf(raw.confidence, ['confirmed', 'probable', 'story'] as const, 'confirmed'),
+    disputed: raw.disputed === true ? true : undefined,
+  };
+}
+
+function cleanPerson(id: string, raw: unknown): Person | null {
+  if (!isObj(raw)) return null;
+  const media = list(raw.media, 500).flatMap((m) => {
+    if (!isObj(m)) return [];
+    const kind = m.kind === 'audio' ? 'audio' : 'image';
+    const data = kind === 'audio' ? safeAudio(m.data) : safeImage(m.data);
+    return data ? [{ id: safeId(m.id) ?? uid('m'), kind, data, caption: str(m.caption, 500) } as const] : [];
+  });
+  return newPerson({
+    id,
+    given: str(raw.given, 500) ?? '',
+    surname: str(raw.surname, 500) ?? '',
+    birthSurname: str(raw.birthSurname, 500),
+    otherNames: list(raw.otherNames, 100).flatMap((n) => str(n, 500) ?? []),
+    title: str(raw.title, 500),
+    sex: oneOf(raw.sex, ['male', 'female', 'unknown', 'other'] as const, 'unknown'),
+    living: oneOf(raw.living, ['auto', 'living', 'deceased'] as const, 'auto'),
+    occupation: str(raw.occupation, 500),
+    bio: str(raw.bio, 100_000),
+    photo: safeImage(raw.photo),
+    media,
+    links: list(raw.links, 200).flatMap((l) => (isObj(l) && str(l.url, 2000) ? [{ id: safeId(l.id) ?? uid('l'), label: str(l.label, 500) ?? '', url: str(l.url, 2000)! }] : [])),
+    socials: list(raw.socials, 200).flatMap((s) =>
+      isObj(s) && str(s.handle, 500) ? [{ id: safeId(s.id) ?? uid('s'), platform: str(s.platform, 50) ?? 'Other', handle: str(s.handle, 500)! }] : [],
+    ),
+    events: list(raw.events, 1000).flatMap((e) => cleanEvent(e) ?? []),
+    placeholder: raw.placeholder === true ? true : undefined,
+    createdAt: num(raw.createdAt, Date.now()),
+    updatedAt: num(raw.updatedAt, Date.now()),
+  });
+}
+
+/**
+ * Rebuild a tree field by field from untrusted input: unknown fields are dropped, types are
+ * checked, ids like "__proto__" are refused, and photos must be embedded images.
+ */
 export function sanitizeTree(src: TreeData): TreeData {
-  const tree = emptyTree(String(src.name ?? 'Restored tree'));
-  tree.homeId = src.homeId;
-  tree.createdAt = Number(src.createdAt) || Date.now();
-  for (const [id, raw] of Object.entries(src.people ?? {})) {
-    const p = newPerson({ ...raw, id });
-    p.otherNames = Array.isArray(raw.otherNames) ? raw.otherNames.map(String) : [];
-    p.events = Array.isArray(raw.events)
-      ? raw.events.map((e) => ({ ...newEvent({ type: (EVENT_TYPES as readonly string[]).includes(e.type) ? e.type : 'custom' }), ...e }))
-      : [];
-    p.media = Array.isArray(raw.media) ? raw.media : [];
-    p.links = Array.isArray(raw.links) ? raw.links : [];
-    p.socials = Array.isArray(raw.socials) ? raw.socials : [];
-    tree.people[id] = p;
+  const s: Record<string, unknown> = isObj(src) ? src : {};
+  const tree = emptyTree(str(s.name, 200) || 'Restored tree');
+  tree.createdAt = num(s.createdAt, Date.now());
+  tree.updatedAt = num(s.updatedAt, Date.now());
+  const people = isObj(s.people) ? s.people : {};
+  for (const [rawId, raw] of Object.entries(people)) {
+    const id = safeId(rawId);
+    const p = id && cleanPerson(id, raw);
+    if (p) tree.people[id] = p;
   }
-  for (const [id, raw] of Object.entries(src.families ?? {})) {
-    const f = newFamily({ ...raw, id });
-    f.partners = (raw.partners ?? []).filter((x) => tree.people[x]).slice(0, 2);
-    f.children = (raw.children ?? []).filter((c) => tree.people[c.id]);
-    f.manualOrder = !!raw.manualOrder;
-    tree.families[id] = f;
+  const families = isObj(s.families) ? s.families : {};
+  for (const [rawId, raw] of Object.entries(families)) {
+    const id = safeId(rawId);
+    if (!id || !isObj(raw)) continue;
+    const seen = new Set<string>();
+    tree.families[id] = newFamily({
+      id,
+      partners: [...new Set(list(raw.partners, 10).flatMap((x) => safeId(x) ?? []))].filter((x) => tree.people[x]).slice(0, 2),
+      children: list(raw.children).flatMap((c) => {
+        const cid = isObj(c) ? safeId(c.id) : undefined;
+        if (!cid || !tree.people[cid] || seen.has(cid)) return [];
+        seen.add(cid);
+        return [{ id: cid, kind: oneOf((c as Record<string, unknown>).kind, ['birth', 'adopted', 'step', 'foster'] as const, 'birth') }];
+      }),
+      status: oneOf(raw.status, ['married', 'partners', 'divorced', 'widowed', 'unknown'] as const, 'unknown'),
+      date: str(raw.date, 200),
+      place: str(raw.place, 500),
+      manualOrder: raw.manualOrder === true,
+      createdAt: num(raw.createdAt, Date.now()),
+      updatedAt: num(raw.updatedAt, Date.now()),
+    });
   }
-  tree.stories = Array.isArray(src.stories) ? src.stories : [];
-  if (!tree.homeId || !tree.people[tree.homeId]) tree.homeId = Object.keys(tree.people)[0];
+  tree.stories = list(s.stories, 500).flatMap((st) =>
+    isObj(st)
+      ? [
+          {
+            id: safeId(st.id) ?? uid('st'),
+            title: str(st.title, 500) ?? 'Story',
+            steps: list(st.steps, 500).flatMap((x) => {
+              const pid = isObj(x) ? safeId(x.personId) : undefined;
+              return pid && tree.people[pid] ? [{ personId: pid, caption: str((x as Record<string, unknown>).caption) ?? '' }] : [];
+            }),
+          },
+        ]
+      : [],
+  );
+  const home = safeId(s.homeId);
+  tree.homeId = home && tree.people[home] ? home : Object.keys(tree.people)[0];
   return tree;
 }
 

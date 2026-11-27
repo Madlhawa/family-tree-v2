@@ -58,7 +58,7 @@ export function Onboarding() {
             <button className="btn-primary w-full h-11" type="submit" disabled={!given.trim() && !surname.trim()} data-testid="onb-start">
               Start my tree
             </button>
-            <p className="text-xs text-muted text-center">Everything is saved privately on this device. No account needed.</p>
+            <p className="text-xs text-muted text-center">Everything is encrypted with your password and saved only on this device.</p>
           </form>
           <div className="flex flex-wrap justify-center gap-2 mt-4">
             <button className="btn-ghost" onClick={() => void createTree('Carter family (demo)', { demo: true })} data-testid="onb-demo">

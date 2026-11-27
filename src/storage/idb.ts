@@ -1,8 +1,25 @@
-import type { TreeData, TreeMeta } from '../model/types';
-import { metaOf, type TreeRepository } from './repository';
+/**
+ * Low-level key/value storage. Records in `trees` and `meta` carry their own `id`;
+ * `settings` uses explicit keys. Higher layers (see encrypted.ts) decide what goes in.
+ */
+
+export type StoreName = 'trees' | 'meta' | 'settings';
+
+export type WriteOp = { store: StoreName; key: string; value: unknown } | { store: StoreName; key: string; delete: true };
+
+export interface Kv {
+  get(store: StoreName, key: string): Promise<unknown>;
+  /** All [key, value] pairs in a store. */
+  entries(store: StoreName): Promise<[string, unknown][]>;
+  /** Apply several writes atomically. */
+  write(ops: WriteOp[]): Promise<void>;
+  /** Remove everything. */
+  clear(): Promise<void>;
+}
 
 const DB_NAME = 'family-tree';
 const DB_VERSION = 1;
+const STORES: StoreName[] = ['trees', 'meta', 'settings'];
 
 function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -19,7 +36,7 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-export class IndexedDbRepository implements TreeRepository {
+export class IndexedDbKv implements Kv {
   private dbp: Promise<IDBDatabase> | null = null;
 
   constructor(private factory: IDBFactory = indexedDB) {}
@@ -41,79 +58,65 @@ export class IndexedDbRepository implements TreeRepository {
     return this.dbp;
   }
 
-  async listTrees(): Promise<TreeMeta[]> {
+  async get(store: StoreName, key: string) {
     const db = await this.db();
-    const tx = db.transaction('meta', 'readonly');
-    const all = await req(tx.objectStore('meta').getAll() as IDBRequest<TreeMeta[]>);
-    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+    return req(db.transaction(store, 'readonly').objectStore(store).get(key));
   }
 
-  async loadTree(id: string): Promise<TreeData | undefined> {
+  async entries(store: StoreName): Promise<[string, unknown][]> {
     const db = await this.db();
-    const tx = db.transaction('trees', 'readonly');
-    return (await req(tx.objectStore('trees').get(id))) as TreeData | undefined;
+    const os = db.transaction(store, 'readonly').objectStore(store);
+    const [keys, values] = await Promise.all([req(os.getAllKeys()), req(os.getAll())]);
+    return keys.map((k, i) => [String(k), values[i]]);
   }
 
-  async saveTree(tree: TreeData): Promise<void> {
+  async write(ops: WriteOp[]) {
+    if (!ops.length) return;
     const db = await this.db();
-    const tx = db.transaction(['trees', 'meta'], 'readwrite');
-    tx.objectStore('trees').put(tree);
-    tx.objectStore('meta').put(metaOf(tree));
+    const tx = db.transaction([...new Set(ops.map((o) => o.store))], 'readwrite');
+    for (const o of ops) {
+      const os = tx.objectStore(o.store);
+      if ('delete' in o) os.delete(o.key);
+      else if (o.store === 'settings') os.put(o.value, o.key);
+      else os.put({ ...(o.value as object), id: o.key });
+    }
     await txDone(tx);
   }
 
-  async deleteTree(id: string): Promise<void> {
+  async clear() {
     const db = await this.db();
-    const tx = db.transaction(['trees', 'meta'], 'readwrite');
-    tx.objectStore('trees').delete(id);
-    tx.objectStore('meta').delete(id);
-    await txDone(tx);
-  }
-
-  async getSetting<T>(key: string): Promise<T | undefined> {
-    const db = await this.db();
-    const tx = db.transaction('settings', 'readonly');
-    return (await req(tx.objectStore('settings').get(key))) as T | undefined;
-  }
-
-  async setSetting<T>(key: string, value: T): Promise<void> {
-    const db = await this.db();
-    const tx = db.transaction('settings', 'readwrite');
-    tx.objectStore('settings').put(value, key);
+    const tx = db.transaction(STORES, 'readwrite');
+    for (const s of STORES) tx.objectStore(s).clear();
     await txDone(tx);
   }
 }
 
 /** In-memory fallback (private windows without IndexedDB, tests). */
-export class MemoryRepository implements TreeRepository {
-  trees = new Map<string, TreeData>();
-  settings = new Map<string, unknown>();
-  async listTrees() {
-    return [...this.trees.values()].map(metaOf).sort((a, b) => b.updatedAt - a.updatedAt);
+export class MemoryKv implements Kv {
+  data: Record<StoreName, Map<string, unknown>> = { trees: new Map(), meta: new Map(), settings: new Map() };
+  async get(store: StoreName, key: string) {
+    const v = this.data[store].get(key);
+    return v === undefined ? undefined : structuredClone(v);
   }
-  async loadTree(id: string) {
-    const t = this.trees.get(id);
-    return t ? structuredClone(t) : undefined;
+  async entries(store: StoreName): Promise<[string, unknown][]> {
+    return [...this.data[store].entries()].map(([k, v]) => [k, structuredClone(v)]);
   }
-  async saveTree(tree: TreeData) {
-    this.trees.set(tree.id, structuredClone(tree));
+  async write(ops: WriteOp[]) {
+    for (const o of ops) {
+      if ('delete' in o) this.data[o.store].delete(o.key);
+      else this.data[o.store].set(o.key, structuredClone(o.store === 'settings' ? o.value : { ...(o.value as object), id: o.key }));
+    }
   }
-  async deleteTree(id: string) {
-    this.trees.delete(id);
-  }
-  async getSetting<T>(key: string) {
-    return this.settings.get(key) as T | undefined;
-  }
-  async setSetting<T>(key: string, value: T) {
-    this.settings.set(key, value);
+  async clear() {
+    for (const s of STORES) this.data[s].clear();
   }
 }
 
-export function createRepository(): TreeRepository {
+export function createKv(): Kv {
   try {
-    if (typeof indexedDB !== 'undefined') return new IndexedDbRepository();
+    if (typeof indexedDB !== 'undefined') return new IndexedDbKv();
   } catch {
     /* fall through */
   }
-  return new MemoryRepository();
+  return new MemoryKv();
 }

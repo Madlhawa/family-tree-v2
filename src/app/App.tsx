@@ -14,6 +14,8 @@ import { StoriesDialog, StoryPlayer } from '../features/Stories';
 import { TimeSlider } from '../features/TimeSlider';
 import { TreesDialog } from '../features/TreesDialog';
 import { computeLayout } from '../layout/layout';
+import { LockScreen } from '../security/LockScreen';
+import { SecurityDialog, useAutoLock } from '../security/SecurityDialog';
 import { useStore } from '../store/store';
 import { Toasts } from '../ui/Toasts';
 import { NextSteps, Onboarding } from './Onboarding';
@@ -41,6 +43,7 @@ function useTheme() {
 
 export function App() {
   const ready = useStore((s) => s.ready);
+  const lock = useStore((s) => s.lock);
   const tree = useStore((s) => s.tree);
   const view = useStore((s) => s.view);
   const focusId = useStore((s) => s.focusId);
@@ -54,6 +57,7 @@ export function App() {
   const tourSeen = useStore((s) => s.tourSeen);
   const [tour, setTour] = useState(false);
   useTheme();
+  useAutoLock();
 
   useEffect(() => {
     void useStore.getState().init();
@@ -86,7 +90,9 @@ export function App() {
     if (focus && focus !== focusId) useStore.setState({ focusId: focus });
   }, [focus, focusId]);
 
-  if (!ready) {
+  if (ready && lock !== 'unlocked') return <LockScreen />;
+
+  if (!ready || lock !== 'unlocked') {
     return (
       <div className="h-full flex items-center justify-center text-muted" role="status">
         Loading your family tree…
@@ -168,6 +174,8 @@ function DialogHost() {
       return tree ? <QuickEntryDialog personId={d.personId} /> : null;
     case 'shortcuts':
       return <ShortcutsDialog />;
+    case 'security':
+      return <SecurityDialog />;
     case 'confirm':
       return <ConfirmDialog d={d} />;
     case 'prompt':

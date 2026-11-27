@@ -1,8 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
+import { loadDemo, setupPassword, unlock } from './helpers';
 
 async function start(page: Page) {
-  await page.goto('/');
-  await expect(page.getByTestId('onboarding')).toBeVisible();
+  await setupPassword(page);
 }
 
 async function addViaHover(page: Page, name: string, button: 'add-parent' | 'add-child' | 'add-spouse' | 'add-sibling', given: string, opts: { born?: string } = {}) {
@@ -22,7 +22,7 @@ test('start with yourself, then add parents, partner and a child', async ({ page
   await page.getByTestId('onb-surname').fill('Rivera');
   await page.getByTestId('onb-start').click();
   await expect(page.locator('[data-person]', { hasText: 'Alex Rivera' })).toBeVisible();
-  await expect(page.getByTestId('save-status')).toContainText('Saved on this device');
+  await expect(page.getByTestId('save-status')).toContainText('Saved & encrypted');
 
   await page.getByTestId('next-parent').click();
   const form = page.getByTestId('add-form');
@@ -46,15 +46,14 @@ test('start with yourself, then add parents, partner and a child', async ({ page
   await expect(page.locator('[data-person]', { hasText: 'Luna' })).toHaveCount(1);
 
   // Persisted after reload
-  await expect(page.getByTestId('save-status')).toContainText('Saved on this device');
+  await expect(page.getByTestId('save-status')).toContainText('Saved & encrypted');
   await page.reload();
+  await unlock(page);
   await expect(page.locator('[data-person]', { hasText: 'Luna' })).toHaveCount(1);
 });
 
 test('edit a profile and undo from the toast', async ({ page }) => {
-  await start(page);
-  await page.getByTestId('onb-demo').click();
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 5000 }).catch(() => {});
+  await loadDemo(page);
   await page.getByTestId('main-menu').click();
   await page.getByTestId('menu-search').click();
   await page.getByTestId('search-input').fill('Walter');
@@ -71,9 +70,7 @@ test('edit a profile and undo from the toast', async ({ page }) => {
 });
 
 test('relationship finder names the relationship', async ({ page }) => {
-  await start(page);
-  await page.getByTestId('onb-demo').click();
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 5000 }).catch(() => {});
+  await loadDemo(page);
   await page.getByTestId('main-menu').click();
   await page.getByTestId('menu-relationship').click();
   const dlg = page.getByRole('dialog', { name: 'Relationship finder' });
@@ -83,9 +80,7 @@ test('relationship finder names the relationship', async ({ page }) => {
 });
 
 test('views and public view', async ({ page }) => {
-  await start(page);
-  await page.getByTestId('onb-demo').click();
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 5000 }).catch(() => {});
+  await loadDemo(page);
   await page.getByTestId('view-fan').click();
   await expect(page.getByTestId('fan-chart')).toBeVisible();
   await page.getByTestId('view-ancestors').click();
@@ -99,9 +94,7 @@ test('views and public view', async ({ page }) => {
 });
 
 test('multiple trees and GEDCOM round-trip', async ({ page }) => {
-  await start(page);
-  await page.getByTestId('onb-demo').click();
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 5000 }).catch(() => {});
+  await loadDemo(page);
   await page.getByTestId('main-menu').click();
   await page.getByTestId('menu-importexport').click();
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-gedcom').click()]);

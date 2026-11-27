@@ -3,7 +3,10 @@ import { create } from 'zustand';
 import { buildDemoTree } from '../demo/demo';
 import { emptyTree, uid } from '../model/people';
 import type { TreeData, TreeMeta } from '../model/types';
-import { createRepository } from '../storage/idb';
+import { sanitizeTree } from '../io/backup';
+import { changePassword as rewrapPassword, createVault, regenerateRecovery, unlockWithPassword, WrongSecretError, type VaultHeader } from '../security/crypto';
+import { countPlainTrees, EncryptedRepository, readVaultHeader, writeVaultHeader } from '../storage/encrypted';
+import { createKv } from '../storage/idb';
 import { metaOf, type TreeRepository } from '../storage/repository';
 
 export type View = 'family' | 'ancestors' | 'descendants' | 'fan';
@@ -24,6 +27,7 @@ export type DialogState =
   | { type: 'history' }
   | { type: 'quickentry'; personId?: string }
   | { type: 'shortcuts' }
+  | { type: 'security' }
   | { type: 'confirm'; title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }
   | { type: 'prompt'; title: string; label: string; initial?: string; confirmLabel: string; onConfirm: (v: string) => void };
 
@@ -49,9 +53,29 @@ export interface AddFormState {
   y: number;
 }
 
+export type LockState = 'checking' | 'setup' | 'locked' | 'unlocked';
+
+export interface Lockout {
+  fails: number;
+  until: number;
+}
+
+export type UnlockResult =
+  | { ok: true }
+  | { ok: false; reason: 'wrong'; lockedUntil?: number }
+  | { ok: false; reason: 'lockedout'; lockedUntil: number }
+  | { ok: false; reason: 'error'; message: string };
+
+export type RecoverResult = { ok: true; recoveryCode: string } | { ok: false; reason: 'wrong' | 'lockedout'; lockedUntil?: number };
+
 interface State {
   repo: TreeRepository;
   ready: boolean;
+  /** Whether the encrypted vault is open. Trees are only ever in memory while 'unlocked'. */
+  lock: LockState;
+  /** Trees saved before a password existed; they are encrypted during setup. */
+  plainTrees: number;
+  autoLockMinutes: number;
   trees: TreeMeta[];
   tree: TreeData | null;
   past: TreeData[];
@@ -85,6 +109,21 @@ export type ProfileTab = 'about' | 'family' | 'timeline' | 'media' | 'links';
 
 interface Actions {
   init(): Promise<void>;
+  /** First run: create the password. Returns the recovery code to show once. */
+  setupPassword(password: string): Promise<string>;
+  /** Open the app after a new recovery code has been saved (setup or recovery). */
+  finishSetup(): void;
+  unlock(password: string): Promise<UnlockResult>;
+  /** Forgotten password: use the recovery code to set a new one. Returns a new recovery code. */
+  recover(code: string, newPassword: string): Promise<RecoverResult>;
+  changePassword(current: string, next: string): Promise<boolean>;
+  newRecoveryCode(password: string): Promise<string | null>;
+  checkPassword(password: string): Promise<boolean>;
+  /** Save, then wipe everything from memory by reloading into the lock screen. */
+  lockNow(): Promise<void>;
+  /** Delete every tree and setting on this device. */
+  eraseAll(): Promise<void>;
+  setAutoLock(minutes: number): void;
   commit<R>(label: string, recipe: (d: Draft<TreeData>) => R): R;
   undo(): void;
   redo(): void;
@@ -117,7 +156,31 @@ interface Actions {
 export type Store = State & Actions;
 
 const MAX_HISTORY = 100;
+export const DEFAULT_AUTO_LOCK = 15;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const kv = createKv();
+let vault: VaultHeader | undefined;
+/** Setup and recovery unlock first, then wait for the user to save their recovery code. */
+let pendingOpen: (() => Promise<void>) | null = null;
+
+async function readLockout(): Promise<Lockout> {
+  const l = (await kv.get('settings', 'lockout')) as Lockout | undefined;
+  return l && typeof l.fails === 'number' ? l : { fails: 0, until: 0 };
+}
+
+/** After 5 wrong tries, wait 30 s, then double the wait each time, up to 15 minutes. */
+async function recordFailure(): Promise<Lockout> {
+  const l = await readLockout();
+  const fails = l.fails + 1;
+  const until = fails >= 5 ? Date.now() + Math.min(15 * 60_000, 30_000 * 2 ** (fails - 5)) : 0;
+  const next = { fails, until };
+  await kv.write([{ store: 'settings', key: 'lockout', value: next }]);
+  return next;
+}
+
+async function clearLockout() {
+  await kv.write([{ store: 'settings', key: 'lockout', value: { fails: 0, until: 0 } }]);
+}
 
 export const useStore = create<Store>()((set, get) => {
   const scheduleSave = () => {
@@ -181,9 +244,37 @@ export const useStore = create<Store>()((set, get) => {
     }
   };
 
+  /** Load trees and settings from a freshly unlocked repository. */
+  const openVault = async (repo: EncryptedRepository) => {
+    await repo.encryptLegacy();
+    const [trees, lastId, tourSeen, backup, autoLock] = await Promise.all([
+      repo.listTrees(),
+      repo.getSetting<string>('lastTreeId'),
+      repo.getSetting<boolean>('tourSeen'),
+      repo.getSetting<{ changes: number; at: number }>('backup'),
+      repo.getSetting<number>('autoLockMinutes'),
+    ]);
+    set({
+      repo,
+      trees,
+      tourSeen: !!tourSeen,
+      changesSinceBackup: backup?.changes ?? 0,
+      lastBackupAt: backup?.at ?? 0,
+      autoLockMinutes: typeof autoLock === 'number' ? autoLock : DEFAULT_AUTO_LOCK,
+      plainTrees: 0,
+    });
+    const id = lastId && trees.some((t) => t.id === lastId) ? lastId : trees[0]?.id;
+    const tree = id ? await repo.loadTree(id) : undefined;
+    loadInto(tree ?? null);
+    set({ lock: 'unlocked' });
+  };
+
   return {
-    repo: createRepository(),
+    repo: new EncryptedRepository(kv),
     ready: false,
+    lock: 'checking',
+    plainTrees: 0,
+    autoLockMinutes: DEFAULT_AUTO_LOCK,
     trees: [],
     tree: null,
     past: [],
@@ -209,7 +300,7 @@ export const useStore = create<Store>()((set, get) => {
     backupReminded: false,
 
     async init() {
-      const { repo } = get();
+      if (get().lock !== 'checking') return;
       // Never lose the last edit when the tab is hidden, closed or reloaded.
       const flushNow = () => {
         if (saveTimer) void flushSave().then(() => set({ saveStatus: 'saved' }));
@@ -218,21 +309,126 @@ export const useStore = create<Store>()((set, get) => {
       document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && flushNow());
       window.addEventListener('beforeunload', flushNow);
       try {
-        const [trees, lastId, theme, tourSeen, backup] = await Promise.all([
-          repo.listTrees(),
-          repo.getSetting<string>('lastTreeId'),
-          repo.getSetting<Theme>('theme'),
-          repo.getSetting<boolean>('tourSeen'),
-          repo.getSetting<{ changes: number; at: number }>('backup'),
-        ]);
-        set({ trees, theme: theme ?? 'system', tourSeen: !!tourSeen, changesSinceBackup: backup?.changes ?? 0, lastBackupAt: backup?.at ?? 0 });
-        const id = lastId && trees.some((t) => t.id === lastId) ? lastId : trees[0]?.id;
-        const tree = id ? await repo.loadTree(id) : undefined;
-        loadInto(tree ?? null);
+        const [theme, header] = await Promise.all([kv.get('settings', 'theme') as Promise<Theme | undefined>, readVaultHeader(kv)]);
+        vault = header;
+        set({ theme: theme ?? 'system', lock: header ? 'locked' : 'setup', plainTrees: header ? 0 : await countPlainTrees(kv) });
       } catch (e) {
         console.error(e);
+        set({ lock: 'setup' });
       }
       set({ ready: true });
+    },
+
+    async setupPassword(password) {
+      if (vault) throw new Error('A password is already set');
+      const v = await createVault(password);
+      const repo = new EncryptedRepository(kv, v.key);
+      await writeVaultHeader(kv, v.header);
+      vault = v.header;
+      await repo.encryptLegacy();
+      pendingOpen = () => openVault(repo);
+      return v.recoveryCode;
+    },
+
+    finishSetup() {
+      const open = pendingOpen;
+      pendingOpen = null;
+      if (open) void open();
+    },
+
+    async unlock(password) {
+      if (!vault) return { ok: false, reason: 'error', message: 'No password has been set up yet.' };
+      const l = await readLockout();
+      if (l.until > Date.now()) return { ok: false, reason: 'lockedout', lockedUntil: l.until };
+      try {
+        const key = await unlockWithPassword(vault, password);
+        await clearLockout();
+        await openVault(new EncryptedRepository(kv, key));
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof WrongSecretError) {
+          const n = await recordFailure();
+          return { ok: false, reason: 'wrong', lockedUntil: n.until || undefined };
+        }
+        console.error(e);
+        return { ok: false, reason: 'error', message: 'Your data could not be opened. It may be damaged.' };
+      }
+    },
+
+    async recover(code, newPassword) {
+      if (!vault) return { ok: false, reason: 'wrong' };
+      const l = await readLockout();
+      if (l.until > Date.now()) return { ok: false, reason: 'lockedout', lockedUntil: l.until };
+      try {
+        const r = await rewrapPassword(vault, 'recovery', code, newPassword);
+        await writeVaultHeader(kv, r.header);
+        vault = r.header;
+        await clearLockout();
+        const repo = new EncryptedRepository(kv, r.key);
+        pendingOpen = () => openVault(repo);
+        return { ok: true, recoveryCode: r.recoveryCode! };
+      } catch (e) {
+        if (!(e instanceof WrongSecretError)) console.error(e);
+        const n = await recordFailure();
+        return { ok: false, reason: 'wrong', lockedUntil: n.until || undefined };
+      }
+    },
+
+    async changePassword(current, next) {
+      if (!vault) return false;
+      try {
+        const r = await rewrapPassword(vault, 'password', current, next);
+        await writeVaultHeader(kv, r.header);
+        vault = r.header;
+        return true;
+      } catch (e) {
+        if (!(e instanceof WrongSecretError)) throw e;
+        return false;
+      }
+    },
+
+    async newRecoveryCode(password) {
+      if (!vault) return null;
+      try {
+        const r = await regenerateRecovery(vault, password);
+        await writeVaultHeader(kv, r.header);
+        vault = r.header;
+        return r.recoveryCode;
+      } catch (e) {
+        if (!(e instanceof WrongSecretError)) throw e;
+        return null;
+      }
+    },
+
+    async checkPassword(password) {
+      if (!vault) return false;
+      try {
+        await unlockWithPassword(vault, password);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async lockNow() {
+      try {
+        await flushSave();
+      } finally {
+        // Reloading is the surest way to drop every decrypted copy held in memory.
+        window.location.reload();
+      }
+    },
+
+    async eraseAll() {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      await kv.clear();
+      window.location.reload();
+    },
+
+    setAutoLock(minutes) {
+      set({ autoLockMinutes: minutes });
+      void get().repo.setSetting('autoLockMinutes', minutes);
     },
 
     commit(label, recipe) {
@@ -306,8 +502,10 @@ export const useStore = create<Store>()((set, get) => {
       loadInto(tree);
     },
 
-    async importTree(tree, label) {
+    async importTree(input, label) {
       await flushSave();
+      // Everything that comes from a file is cleaned before it is stored.
+      const tree = sanitizeTree(input);
       tree.id = uid('t');
       tree.updatedAt = Date.now();
       await get().repo.saveTree(tree);

@@ -16,6 +16,7 @@ import {
   Keyboard,
   ListPlus,
   Loader2,
+  LockKeyhole,
   MapPin,
   Menu as MenuIcon,
   Monitor,
@@ -24,6 +25,7 @@ import {
   Printer,
   Redo2,
   Search,
+  ShieldCheck,
   Sparkles,
   Sun,
   TreePine,
@@ -98,6 +100,8 @@ export function TopBar({ onTour }: { onTour: () => void }) {
         { label: 'History', icon: <History size={16} />, onSelect: () => st.setDialog({ type: 'history' }), disabled: !tree },
         { label: 'Import & export', icon: <FileDown size={16} />, onSelect: () => st.setDialog({ type: 'importexport' }), testId: 'menu-importexport' },
         { label: 'Your trees', icon: <FolderTree size={16} />, onSelect: () => st.setDialog({ type: 'trees' }), testId: 'menu-trees' },
+        { label: 'Password & security', icon: <ShieldCheck size={16} />, onSelect: () => st.setDialog({ type: 'security' }), testId: 'menu-security' },
+        { label: 'Lock now', icon: <LockKeyhole size={16} />, onSelect: () => void st.lockNow(), testId: 'menu-lock' },
         { label: 'Load demo tree', icon: <Sparkles size={16} />, onSelect: () => void st.createTree('Carter family (demo)', { demo: true }), testId: 'menu-demo' },
       ],
     },
@@ -180,9 +184,12 @@ export function TopBar({ onTour }: { onTour: () => void }) {
         {tree && (
           <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted mr-1" role="status" aria-live="polite" data-testid="save-status">
             {saveStatus === 'saving' ? <Loader2 size={14} className="animate-spin" /> : saveStatus === 'error' ? <CloudOff size={14} className="text-danger" /> : <Cloud size={14} className="text-ok" />}
-            {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? 'Not saved!' : 'Saved on this device'}
+            {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? 'Not saved!' : 'Saved & encrypted on this device'}
           </span>
         )}
+        <button className="icon-btn" onClick={() => void st.lockNow()} aria-label="Lock" title="Lock" data-testid="lock-button">
+          <LockKeyhole size={17} />
+        </button>
         {publicView && <span className="chip text-accent border-accent/40 hidden sm:inline-flex">Public view</span>}
         <Menu
           label="Main menu"

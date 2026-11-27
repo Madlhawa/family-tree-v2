@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens (RGB triplets so Tailwind can apply alpha) */
+:root {
+  --bg: 246 247 249;
+  --surface: 255 255 255;
+  --subtle: 241 243 246;
+  --line: 223 227 233;
+  --ink: 22 27 34;
+  --muted: 88 96 110;
+  --accent: 79 70 229;
+  --accent-ink: 255 255 255;
+  --danger: 200 38 38;
+  --warn: 196 112 0;
+  --ok: 22 128 74;
+  --canvas-line: 148 156 170;
+  --radius: 8px;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 15 17 21;
+  --surface: 26 29 35;
+  --subtle: 34 38 46;
+  --line: 52 58 68;
+  --ink: 236 239 244;
+  --muted: 160 168 182;
+  --accent: 129 140 248;
+  --accent-ink: 15 17 21;
+  --danger: 248 113 113;
+  --warn: 251 191 36;
+  --ok: 74 222 128;
+  --canvas-line: 98 106 120;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-ink font-sans antialiased;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+*:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded px-3 h-10 text-sm font-medium transition-colors select-none
+      disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-accent-ink hover:bg-accent/90 shadow-soft;
+  }
+  .btn-secondary {
+    @apply btn bg-surface text-ink border border-line hover:bg-subtle;
+  }
+  .btn-ghost {
+    @apply btn text-ink hover:bg-subtle;
+  }
+  .btn-danger {
+    @apply btn bg-danger text-white hover:bg-danger/90;
+  }
+  .icon-btn {
+    @apply inline-flex items-center justify-center rounded h-10 w-10 text-muted hover:text-ink hover:bg-subtle transition-colors;
+  }
+  .input {
+    @apply w-full h-10 rounded border border-line bg-surface px-3 text-sm text-ink placeholder:text-muted/70
+      focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent;
+  }
+  .textarea {
+    @apply input h-auto py-2 leading-relaxed;
+  }
+  .label {
+    @apply block text-xs font-medium text-muted mb-1;
+  }
+  .card {
+    @apply bg-surface border border-line rounded-lg shadow-soft;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-ink;
+  }
+  .seg {
+    @apply inline-flex rounded border border-line bg-subtle p-0.5;
+  }
+  .seg > button {
+    @apply px-3 h-9 rounded-[6px] text-sm text-muted transition-colors;
+  }
+  .seg > button[aria-pressed='true'],
+  .seg > button[aria-selected='true'] {
+    @apply bg-surface text-ink shadow-soft;
+  }
+}
+
+@media (pointer: coarse) {
+  .btn,
+  .icon-btn,
+  .input {
+    min-height: 44px;
+  }
+  .icon-btn {
+    min-width: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-pop {
+  animation: pop-in 140ms ease-out;
+}
+
+.leaflet-container {
+  font: inherit;
+}
+
+/* ---------- print ---------- */
+@media print {
+  body {
+    overflow: visible !important;
+    background: white !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  #print-root {
+    display: block !important;
+    position: static !important;
+  }
+  .print-page-break {
+    break-before: page;
+  }
+}
